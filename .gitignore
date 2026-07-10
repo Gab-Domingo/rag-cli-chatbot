@@ -2,3 +2,4 @@
 __pycache__/
 knowledge/
 chroma_db/
+documents/
