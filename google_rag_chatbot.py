@@ -3,8 +3,8 @@ import os
 from dotenv import load_dotenv
 from google import genai
 
-from ingest import get_collection, ingest_knowledge
-from rag_pipeline import CHAT_MODEL, EMBEDDING_MODEL, RAGPipeline
+from ingest import EMBEDDING_MODEL, get_vectorstore, ingest_knowledge
+from rag_pipeline import CHAT_MODEL, RAGPipeline
 
 
 def main():
@@ -14,14 +14,14 @@ def main():
         raise ValueError("GEMINI_API_KEY is not set")
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    collection = get_collection()
+    vectorstore = get_vectorstore()
 
-    ingest_knowledge(client, collection)
+    ingest_knowledge(client, vectorstore)
 
-    pipeline = RAGPipeline(client, collection)
+    pipeline = RAGPipeline(vectorstore)
 
     print("\nRAG CLI Chatbot Initialized.")
-    print(f"Using: {EMBEDDING_MODEL} + {CHAT_MODEL}")
+    print(f"Using: LangChain + {EMBEDDING_MODEL} + {CHAT_MODEL}")
 
     while True:
         try:

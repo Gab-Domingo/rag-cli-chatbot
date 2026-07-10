@@ -1,44 +1,53 @@
 import glob
 import os
+import re
+import time
 
-import chromadb
 import pymupdf4llm
 from google import genai
 from google.genai import types
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 KNOWLEDGE_DIR = "./documents"
 CHROMA_PATH = "./chroma_db"
 COLLECTION_NAME = "google_rag_knowledge"
-EMBED_BATCH_SIZE = 100
 EMBEDDING_MODEL = "gemini-embedding-001"
 OCR_MODEL = "gemini-2.5-flash"
+EMBED_BATCH_SIZE = 20
+BATCH_DELAY_SECONDS = 15
+MAX_RETRIES = 5
 
 SUPPORTED_EXTENSIONS = ["*.pdf", "*.png", "*.jpg", "*.jpeg", "*.txt"]
 
-
-def get_collection():
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    return chroma_client.get_or_create_collection(name=COLLECTION_NAME)
-
-
-def chunk_text(text, max_chars=1000, overlap=100):
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + max_chars
-        chunks.append(text[start:end])
-        start += max_chars - overlap
-    return chunks
+TEXT_SPLITTER = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=100,
+)
 
 
-def get_indexed_sources(collection):
-    if collection.count() == 0:
+def get_embeddings():
+    return GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+
+
+def get_vectorstore():
+    return Chroma(
+        collection_name=COLLECTION_NAME,
+        embedding_function=get_embeddings(),
+        persist_directory=CHROMA_PATH,
+    )
+
+
+def get_indexed_sources(vectorstore):
+    data = vectorstore.get(include=["metadatas"])
+    if not data["metadatas"]:
         return set()
 
-    existing = collection.get(include=["metadatas"])
     return {
         meta["source"]
-        for meta in existing["metadatas"]
+        for meta in data["metadatas"]
         if meta and "source" in meta
     }
 
@@ -68,19 +77,53 @@ def extract_image_text(client, file_path, ext):
     return ocr_response.text
 
 
-def embed_in_batches(client, chunks):
-    embeddings = []
-    for start in range(0, len(chunks), EMBED_BATCH_SIZE):
-        batch = chunks[start : start + EMBED_BATCH_SIZE]
-        embed_response = client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=batch,
-        )
-        embeddings.extend(embedding.values for embedding in embed_response.embeddings)
-    return embeddings
+def load_document(client, file_path):
+    filename = os.path.basename(file_path)
+    ext = filename.split(".")[-1].lower()
+
+    if ext == "pdf":
+        text = extract_pdf_text(file_path)
+    elif ext in ["png", "jpg", "jpeg"]:
+        text = extract_image_text(client, file_path, ext)
+    else:
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+
+    if not text or not text.strip():
+        return []
+
+    return [Document(page_content=text, metadata={"source": filename})]
 
 
-def ingest_knowledge(client, collection):
+def parse_retry_delay(error_message):
+    match = re.search(r"retry in ([0-9.]+)s", error_message, re.IGNORECASE)
+    if match:
+        return float(match.group(1)) + 1
+    return None
+
+
+def add_documents_with_retry(vectorstore, documents):
+    for start in range(0, len(documents), EMBED_BATCH_SIZE):
+        batch = documents[start : start + EMBED_BATCH_SIZE]
+        for attempt in range(MAX_RETRIES):
+            try:
+                vectorstore.add_documents(batch)
+                break
+            except Exception as error:
+                if "429" not in str(error) and "RESOURCE_EXHAUSTED" not in str(error):
+                    raise
+
+                wait_seconds = parse_retry_delay(str(error)) or BATCH_DELAY_SECONDS * (attempt + 1)
+                print(f" Rate limited. Waiting {wait_seconds:.0f}s before retry...")
+                time.sleep(wait_seconds)
+        else:
+            raise RuntimeError("Embedding failed after maximum retries due to rate limits.")
+
+        if start + EMBED_BATCH_SIZE < len(documents):
+            time.sleep(BATCH_DELAY_SECONDS)
+
+
+def ingest_knowledge(client, vectorstore):
     print(f"Scanning '{KNOWLEDGE_DIR}' directory for files...")
     if not os.path.exists(KNOWLEDGE_DIR):
         os.makedirs(KNOWLEDGE_DIR)
@@ -95,7 +138,7 @@ def ingest_knowledge(client, collection):
         print(f"No valid documents found in '{KNOWLEDGE_DIR}'. Add files to begin.")
         return 0
 
-    indexed_sources = get_indexed_sources(collection)
+    indexed_sources = get_indexed_sources(vectorstore)
     pending_files = [
         file_path
         for file_path in all_files
@@ -106,52 +149,26 @@ def ingest_knowledge(client, collection):
         print(f"All {len(all_files)} file(s) already indexed. Delete '{CHROMA_PATH}' to re-ingest.")
         return 0
 
-    all_chunks = []
-    all_ids = []
-    all_metadatas = []
-    chunk_counter = collection.count()
+    total_chunks = 0
 
     for file_path in pending_files:
         filename = os.path.basename(file_path)
-        ext = filename.split(".")[-1].lower()
-
         print(f"Processing: {filename}...")
 
-        if ext == "pdf":
-            extracted_text = extract_pdf_text(file_path)
-        elif ext in ["png", "jpg", "jpeg"]:
-            extracted_text = extract_image_text(client, file_path, ext)
-        else:
-            with open(file_path, "r", encoding="utf-8") as f:
-                extracted_text = f.read()
-
-        if not extracted_text or not extracted_text.strip():
+        documents = load_document(client, file_path)
+        if not documents:
             print(f"Warning: Could not extract readable text from {filename}.")
             continue
 
-        file_chunks = chunk_text(extracted_text)
-        print(f" Split into {len(file_chunks)} text fragments.")
+        chunks = TEXT_SPLITTER.split_documents(documents)
+        print(f" Split into {len(chunks)} text fragments.")
+        print(f" Embedding via {EMBEDDING_MODEL} (batches of {EMBED_BATCH_SIZE})...")
 
-        for chunk_index, chunk in enumerate(file_chunks):
-            all_chunks.append(chunk)
-            all_ids.append(f"chunk_{chunk_counter}")
-            all_metadatas.append({
-                "source": filename,
-                "chunk_index": chunk_index,
-            })
-            chunk_counter += 1
+        add_documents_with_retry(vectorstore, chunks)
+        total_chunks += len(chunks)
+        print(f" Indexed {len(chunks)} chunks from {filename}.")
 
-    if not all_chunks:
-        return 0
+    if total_chunks:
+        print(f"Successfully indexed {total_chunks} new chunks to DB.")
 
-    print(f"\nGenerating embeddings via {EMBEDDING_MODEL}...")
-    embeddings = embed_in_batches(client, all_chunks)
-
-    collection.add(
-        embeddings=embeddings,
-        documents=all_chunks,
-        ids=all_ids,
-        metadatas=all_metadatas,
-    )
-    print(f"Successfully indexed {len(all_chunks)} new chunks to DB.")
-    return len(all_chunks)
+    return total_chunks

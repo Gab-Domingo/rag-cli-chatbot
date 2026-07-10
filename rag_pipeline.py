@@ -1,4 +1,8 @@
-EMBEDDING_MODEL = "gemini-embedding-001"
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 CHAT_MODEL = "gemini-3.5-flash"
 N_RESULTS = 3
 
@@ -7,47 +11,37 @@ SYSTEM_INSTRUCTION = (
     "If the answer cannot be found in the context, clearly state that you do not know."
 )
 
+PROMPT = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_INSTRUCTION),
+    ("human", "Retrieved Context:\n{context}\n\nUser Question: {input}"),
+])
+
+
+def format_docs(documents):
+    if not documents:
+        return "No relevant context found."
+
+    blocks = []
+    for doc in documents:
+        source = doc.metadata.get("source", "unknown")
+        blocks.append(f"[{source}]\n{doc.page_content}")
+    return "\n\n".join(blocks)
+
 
 class RAGPipeline:
-    def __init__(self, client, collection):
-        self.client = client
-        self.collection = collection
-        self.chat = client.chats.create(model=CHAT_MODEL)
-
-    def embed_query(self, query):
-        response = self.client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=query,
-        )
-        return response.embeddings[0].values
-
-    def retrieve_context(self, query):
-        query_vector = self.embed_query(query)
-        results = self.collection.query(
-            query_embeddings=[query_vector],
-            n_results=N_RESULTS,
-            include=["documents", "metadatas"],
-        )
-
-        if not results["documents"] or not results["documents"][0]:
-            return "No relevant context found."
-
-        context_blocks = []
-        for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-            source = meta.get("source", "unknown") if meta else "unknown"
-            context_blocks.append(f"[{source}]\n{doc}")
-
-        return "\n\n".join(context_blocks)
-
-    def build_prompt(self, query, retrieved_context):
-        return (
-            f"{SYSTEM_INSTRUCTION}\n\n"
-            f"Retrieved Context:\n{retrieved_context}\n\n"
-            f"User Question: {query}"
+    def __init__(self, vectorstore):
+        self.vectorstore = vectorstore
+        self.retriever = vectorstore.as_retriever(search_kwargs={"k": N_RESULTS})
+        self.llm = ChatGoogleGenerativeAI(model=CHAT_MODEL)
+        self.chain = (
+            {
+                "context": self.retriever | format_docs,
+                "input": RunnablePassthrough(),
+            }
+            | PROMPT
+            | self.llm
+            | StrOutputParser()
         )
 
     def answer(self, query):
-        retrieved_context = self.retrieve_context(query)
-        prompt = self.build_prompt(query, retrieved_context)
-        response = self.chat.send_message(prompt)
-        return response.text
+        return self.chain.invoke(query)
