@@ -11,20 +11,21 @@ from langchain_core.documents import Document
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+
 KNOWLEDGE_DIR = "./documents"
-CHROMA_PATH = "./chroma_db"
 COLLECTION_NAME = "google_rag_knowledge"
 EMBEDDING_MODEL = "gemini-embedding-001"
 OCR_MODEL = "gemini-2.5-flash"
 EMBED_BATCH_SIZE = 20
 BATCH_DELAY_SECONDS = 15
 MAX_RETRIES = 5
+CHROMA_PATH = "./chroma_db"
 
 SUPPORTED_EXTENSIONS = ["*.pdf", "*.png", "*.jpg", "*.jpeg", "*.txt"]
 
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=1000,
-    chunk_overlap=100,
+    chunk_overlap=200,
 )
 
 
@@ -34,22 +35,23 @@ def get_embeddings():
 
 def get_vectorstore():
     return Chroma(
-        collection_name=COLLECTION_NAME,
-        embedding_function=get_embeddings(),
         persist_directory=CHROMA_PATH,
+        embedding_function=get_embeddings(),
+        collection_name=COLLECTION_NAME
     )
 
 
 def get_indexed_sources(vectorstore):
+
     data = vectorstore.get(include=["metadatas"])
     if not data["metadatas"]:
         return set()
-
-    return {
-        meta["source"]
-        for meta in data["metadatas"]
-        if meta and "source" in meta
-    }
+    sources = set ()
+    for meta in data["metadatas"]:
+        if meta and "source" in meta:
+            sources.add(os.path.basename(str(meta["source"])))
+    print(f"Found {len(sources)} indexed sources.")        
+    return sources
 
 
 def extract_pdf_text(file_path):
@@ -92,7 +94,7 @@ def load_document(client, file_path):
     if not text or not text.strip():
         return []
 
-    return [Document(page_content=text, metadata={"source": filename})]
+    return [Document(page_content=text, metadata={"source": str(filename)})]
 
 
 def parse_retry_delay(error_message):
@@ -146,7 +148,7 @@ def ingest_knowledge(client, vectorstore):
     ]
 
     if not pending_files:
-        print(f"All {len(all_files)} file(s) already indexed. Delete '{CHROMA_PATH}' to re-ingest.")
+        print(f"All {len(all_files)} file(s) already indexed in Chroma.")
         return 0
 
     total_chunks = 0
