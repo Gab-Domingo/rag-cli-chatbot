@@ -1,7 +1,7 @@
 .env
 __pycache__/
 chroma_db/
-documents/
+documents
 .DS_Store
 .vscode/
-.venv
+.venv/
