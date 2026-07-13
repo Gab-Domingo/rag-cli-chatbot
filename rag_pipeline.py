@@ -27,6 +27,10 @@ PROMPT = ChatPromptTemplate.from_messages([
 
 
 def format_docs(documents):
+    """
+    Formats the retrieved documents for the RAG pipeline.
+    It concatenates the documents and returns the formatted text.
+    """
     if not documents:
         return "No relevant context found."
 
@@ -70,7 +74,7 @@ class RAGPipeline:
         seen = set()
 
         for doc in docs:
-            source = doc.metadata.get("source", "unknown")
+            source = doc.metadata.get("source", "page_number")
             if source not in seen:
                 seen.add(source)
                 citations.append(source)

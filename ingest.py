@@ -21,7 +21,7 @@ BATCH_DELAY_SECONDS = 15
 MAX_RETRIES = 5
 CHROMA_PATH = "./chroma_db"
 
-SUPPORTED_EXTENSIONS = ["*.pdf", "*.png", "*.jpg", "*.jpeg", "*.txt"]
+SUPPORTED_EXTENSIONS = ["*.pdf", "*.txt"]
 
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=1000,
@@ -42,7 +42,7 @@ def get_vectorstore():
 
 
 def get_indexed_sources(vectorstore):
-
+    #Extract sources from the vectorstore
     data = vectorstore.get(include=["metadatas"])
     if not data["metadatas"]:
         return set()
@@ -63,30 +63,56 @@ def extract_pdf_text(file_path):
     )
 
 
-def extract_image_text(client, file_path, ext):
-    mime_type = f"image/{ext}"
-    print(" Running Gemini OCR on image...")
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
+# def extract_image_text(client, file_path, ext):
+#     #Extract text from images using Gemini OCR
+#     mime_type = f"image/{ext}"
+#     print(" Running Gemini OCR on image...")
+#     with open(file_path, "rb") as f:
+#         file_bytes = f.read()
 
-    ocr_response = client.models.generate_content(
-        model=OCR_MODEL,
-        contents=[
-            types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-            "Perform OCR on this file. Transcribe all text, preserving tables and hierarchy layout exactly. Return raw text only.",
-        ],
-    )
-    return ocr_response.text
+#     ocr_response = client.models.generate_content(
+#         model=OCR_MODEL,
+#         contents=[
+#             types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+#             "Perform OCR on this file. Transcribe all text, preserving tables and hierarchy layout exactly. Return raw text only.",
+#         ],
+#     )
+#     return ocr_response.text
 
 
 def load_document(client, file_path):
+    #Extract text and filepath from documents
     filename = os.path.basename(file_path)
     ext = filename.split(".")[-1].lower()
 
     if ext == "pdf":
         text = extract_pdf_text(file_path)
-    elif ext in ["png", "jpg", "jpeg"]:
-        text = extract_image_text(client, file_path, ext)
+
+        #Extract page number for metadata
+        pages = re.split(
+            r"--- end of page.*page_number=\d+ ---",
+            text,
+        )
+
+        documents = []
+
+        for page_number, page_text in enumerate(pages, start=1):
+            #Skip empty pages
+            if not page_text:
+                continue
+
+            documents.append(
+                Document(
+                    page_content=page_text,
+                    metadata={
+                        "source": filename,
+                        "page_number": page_number,
+                        "total_pages": len(pages),
+                    }
+                )
+            )
+    # elif ext in ["png", "jpg", "jpeg"]:
+    #     text = extract_image_text(client, file_path, ext)
     else:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
@@ -94,10 +120,11 @@ def load_document(client, file_path):
     if not text or not text.strip():
         return []
 
-    return [Document(page_content=text, metadata={"source": str(filename)})]
+    return documents
 
 
 def parse_retry_delay(error_message):
+    #Parse retry delay from error message
     match = re.search(r"retry in ([0-9.]+)s", error_message, re.IGNORECASE)
     if match:
         return float(match.group(1)) + 1
@@ -105,6 +132,7 @@ def parse_retry_delay(error_message):
 
 
 def add_documents_with_retry(vectorstore, documents):
+    #Add documents to the vectorstore with retry logic
     for start in range(0, len(documents), EMBED_BATCH_SIZE):
         batch = documents[start : start + EMBED_BATCH_SIZE]
         for attempt in range(MAX_RETRIES):
@@ -126,6 +154,12 @@ def add_documents_with_retry(vectorstore, documents):
     return True
 
 def ingest_knowledge(client, vectorstore):
+    """
+    This function ingests knowledge into the vectorstore.
+    It scans the KNOWLEDGE_DIR directory for files, extracts text from them, 
+    and adds the text to the vectorstore.
+    """
+
     print(f"Scanning '{KNOWLEDGE_DIR}' directory for files...")
     if not os.path.exists(KNOWLEDGE_DIR):
         os.makedirs(KNOWLEDGE_DIR)

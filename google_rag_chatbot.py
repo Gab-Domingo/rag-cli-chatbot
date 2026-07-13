@@ -31,15 +31,21 @@ def main():
     while True:
         try:
             user_input = input("\nYou: ")
+            #Stop words for exit
             if user_input.lower() in ["exit", "quit"]:
                 print("Goodbye!")
                 break
+
+            #Skip empty input
             if not user_input.strip():
                 continue
 
+            #Call the RAG pipeline to get the answer
             print(" Searching Context....")
             result = pipeline.answer(user_input)
             print(f"\nPoBot:\n{result['answer']}")
+        
+            #Print sources used to answer
             if result['citations']:
                 print("\nSources: ")
                 for source in result["citations"]:
