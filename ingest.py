@@ -123,7 +123,7 @@ def add_documents_with_retry(vectorstore, documents):
 
         if start + EMBED_BATCH_SIZE < len(documents):
             time.sleep(BATCH_DELAY_SECONDS)
-
+    return True
 
 def ingest_knowledge(client, vectorstore):
     print(f"Scanning '{KNOWLEDGE_DIR}' directory for files...")
@@ -166,7 +166,11 @@ def ingest_knowledge(client, vectorstore):
         print(f" Split into {len(chunks)} text fragments.")
         print(f" Embedding via {EMBEDDING_MODEL} (batches of {EMBED_BATCH_SIZE})...")
 
-        add_documents_with_retry(vectorstore, chunks)
+        success = add_documents_with_retry(vectorstore, chunks)
+        if not success:
+            print(f"Rate limit exceeded while indexing {filename}. Continuing...")
+            continue
+
         total_chunks += len(chunks)
         print(f" Indexed {len(chunks)} chunks from {filename}.")
 

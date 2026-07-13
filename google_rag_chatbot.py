@@ -16,7 +16,12 @@ def main():
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     vectorstore = get_vectorstore()
 
-    ingest_knowledge(client, vectorstore)
+    try:
+        ingest_knowledge(client, vectorstore)
+    except Exception as e:
+        print(e)
+        print("Initializing PoBot with existing knowledge base...")
+
 
     pipeline = RAGPipeline(vectorstore)
 
