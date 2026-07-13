@@ -4,11 +4,20 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 CHAT_MODEL = "gemini-3.5-flash"
-N_RESULTS = 3
 
-SYSTEM_INSTRUCTION = (
-    "You are a helpful assistant. Use the following retrieved context to answer the user's question. "
-    "If the answer cannot be found in the context, clearly state that you do not know."
+SYSTEM_INSTRUCTION = ("""
+    You are PoBot, an AI assistant that answers questions about Hong Kong labour regulations.
+
+Use only the retrieved context to answer.
+
+Guidelines:
+- Answer clearly and concisely.
+- Use bullet points when listing rights or requirements.
+- Do not mention "based on the provided context."
+- If the answer is not in the retrieved context, say:
+  "I couldn't find that information in the indexed documents."
+- Do not invent or assume facts.
+"""
 )
 
 PROMPT = ChatPromptTemplate.from_messages([
@@ -24,24 +33,49 @@ def format_docs(documents):
     blocks = []
     for doc in documents:
         source = doc.metadata.get("source", "unknown")
-        blocks.append(f"[{source}]\n{doc.page_content}")
+        blocks.append(
+            f"Source: {source}\n"
+            f"{doc.page_content}"
+        )
     return "\n\n".join(blocks)
 
 
 class RAGPipeline:
     def __init__(self, vectorstore):
         self.vectorstore = vectorstore
-        self.retriever = vectorstore.as_retriever(search_kwargs={"k": N_RESULTS})
+        self.retriever = vectorstore.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 4, "fetch_k": 10})
         self.llm = ChatGoogleGenerativeAI(model=CHAT_MODEL)
-        self.chain = (
-            {
-                "context": self.retriever | format_docs,
-                "input": RunnablePassthrough(),
-            }
-            | PROMPT
-            | self.llm
-            | StrOutputParser()
-        )
 
     def answer(self, query):
-        return self.chain.invoke(query)
+        #Retrieve relevant documents
+        docs = self.retriever.invoke(query)
+
+        #Format context
+        context = format_docs(docs)
+
+        #Generate answer
+        answer = (
+            PROMPT
+            | self.llm
+            | StrOutputParser()
+        ).invoke({
+            "context": context,
+            "input": query,
+        })
+
+        #Collecting citations
+        citations = []
+        seen = set()
+
+        for doc in docs:
+            source = doc.metadata.get("source", "unknown")
+            if source not in seen:
+                seen.add(source)
+                citations.append(source)
+
+        return {
+            "answer": answer,
+            "citations": citations,
+        }

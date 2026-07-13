@@ -38,8 +38,13 @@ def main():
                 continue
 
             print(" Searching Context....")
-            answer = pipeline.answer(user_input)
-            print(f"\nPoBot: {answer}")
+            result = pipeline.answer(user_input)
+            print(f"\nPoBot:\n{result['answer']}")
+            if result['citations']:
+                print("\nSources: ")
+                for source in result["citations"]:
+                    print(f"- {source}")
+            print("-" * 80)
 
         except Exception as e:
             print(f"\nAn error occurred: {e}")
