@@ -36,7 +36,6 @@ def main():
                 print("Goodbye!")
                 break
 
-            #Skip empty input
             if not user_input.strip():
                 continue
 
@@ -45,11 +44,12 @@ def main():
             result = pipeline.answer(user_input)
             print(f"\nPoBot:\n{result['answer']}")
         
-            #Print sources used to answer
             if result['citations']:
                 print("\nSources: ")
-                for source in result["citations"]:
-                    print(f"- {source}")
+                for citation in result["citations"]:
+                    print(
+                        f"- {citation['source']}, (Page {citation['page']})"
+                    )
             print("-" * 80)
 
         except Exception as e:

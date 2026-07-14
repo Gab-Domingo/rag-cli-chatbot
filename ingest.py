@@ -42,7 +42,15 @@ def get_vectorstore():
 
 
 def get_indexed_sources(vectorstore):
-    #Extract sources from the vectorstore
+    """
+    Retrieves the list of sources already indexed in the vectorstore.
+    Prevents processing and indexing the same documents multiple times.
+    Args:
+        vectorstore: The Chroma vectorstore.
+
+    Returns:
+        set: A set of indexed sources.
+    """
     data = vectorstore.get(include=["metadatas"])
     if not data["metadatas"]:
         return set()
@@ -55,6 +63,14 @@ def get_indexed_sources(vectorstore):
 
 
 def extract_pdf_text(file_path):
+    """
+    Extract text from a PDF file.
+    Args:
+        file_path: The path to the PDF file.
+
+    Returns:
+        str: The extracted text.
+    """
     print(" Extracting with pymupdf4llm (layout + tables)...")
     return pymupdf4llm.to_markdown(
         file_path,
@@ -63,32 +79,22 @@ def extract_pdf_text(file_path):
     )
 
 
-# def extract_image_text(client, file_path, ext):
-#     #Extract text from images using Gemini OCR
-#     mime_type = f"image/{ext}"
-#     print(" Running Gemini OCR on image...")
-#     with open(file_path, "rb") as f:
-#         file_bytes = f.read()
+def load_document(file_path):
+    """
+    Load a document from the given file path.
+    Args:
+        file_path: The path to the document.
 
-#     ocr_response = client.models.generate_content(
-#         model=OCR_MODEL,
-#         contents=[
-#             types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-#             "Perform OCR on this file. Transcribe all text, preserving tables and hierarchy layout exactly. Return raw text only.",
-#         ],
-#     )
-#     return ocr_response.text
-
-
-def load_document(client, file_path):
-    #Extract text and filepath from documents
+    Returns:
+        List of Document objects.
+    """
     filename = os.path.basename(file_path)
     ext = filename.split(".")[-1].lower()
 
     if ext == "pdf":
         text = extract_pdf_text(file_path)
 
-        #Extract page number for metadata
+        #Extract page number for pymupdf4llm's page separators: e.g. "--- end of page 1 ---"
         pages = re.split(
             r"--- end of page.*page_number=\d+ ---",
             text,
@@ -97,7 +103,6 @@ def load_document(client, file_path):
         documents = []
 
         for page_number, page_text in enumerate(pages, start=1):
-            #Skip empty pages
             if not page_text:
                 continue
 
@@ -111,8 +116,7 @@ def load_document(client, file_path):
                     }
                 )
             )
-    # elif ext in ["png", "jpg", "jpeg"]:
-    #     text = extract_image_text(client, file_path, ext)
+
     else:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
@@ -122,9 +126,8 @@ def load_document(client, file_path):
 
     return documents
 
-
 def parse_retry_delay(error_message):
-    #Parse retry delay from error message
+    #Parse retry delay from error message for rate limits
     match = re.search(r"retry in ([0-9.]+)s", error_message, re.IGNORECASE)
     if match:
         return float(match.group(1)) + 1
@@ -132,7 +135,16 @@ def parse_retry_delay(error_message):
 
 
 def add_documents_with_retry(vectorstore, documents):
-    #Add documents to the vectorstore with retry logic
+    """
+    Add documents to the vectorstore with retry logic to handle rate limits.
+    Args:
+        vectorstore: The Chroma vectorstore.
+        documents: List of documents to add.
+
+    Returns:
+        bool: True if documents were added successfully.
+    """
+
     for start in range(0, len(documents), EMBED_BATCH_SIZE):
         batch = documents[start : start + EMBED_BATCH_SIZE]
         for attempt in range(MAX_RETRIES):
@@ -155,9 +167,12 @@ def add_documents_with_retry(vectorstore, documents):
 
 def ingest_knowledge(client, vectorstore):
     """
-    This function ingests knowledge into the vectorstore.
-    It scans the KNOWLEDGE_DIR directory for files, extracts text from them, 
-    and adds the text to the vectorstore.
+    Args:
+        client: The Google Generative AI client.
+        vectorstore: The Chroma vectorstore.
+
+    Returns:
+        int: The number of chunks indexed.
     """
 
     print(f"Scanning '{KNOWLEDGE_DIR}' directory for files...")
@@ -191,7 +206,7 @@ def ingest_knowledge(client, vectorstore):
         filename = os.path.basename(file_path)
         print(f"Processing: {filename}...")
 
-        documents = load_document(client, file_path)
+        documents = load_document(file_path)
         if not documents:
             print(f"Warning: Could not extract readable text from {filename}.")
             continue
