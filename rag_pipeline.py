@@ -1,6 +1,9 @@
+
+# pyrefly: ignore [missing-import]
 from langchain_core.output_parsers import StrOutputParser
+# pyrefly: ignore [missing-import]
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+# pyrefly: ignore [missing-import]
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 CHAT_MODEL = "gemini-3.5-flash"
@@ -44,7 +47,7 @@ class RAGPipeline:
             search_type="mmr",
             search_kwargs={"k": 4, "fetch_k": 10})
         self.llm = ChatGoogleGenerativeAI(model=CHAT_MODEL)
-
+   
     def _format_context(self,docs):
         """
         Formats the retrieved documents for the RAG pipeline.
